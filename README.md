@@ -178,4 +178,4 @@ hobbyist reimplementation (reverse engineering) and to LLM development.
 
 Apache License 2.0. See `LICENSE` and `NOTICE`.
 
-Copyright 2026 Ryu116
+Copyright 2026 Ryu116 (also known as HappyTotoro116)

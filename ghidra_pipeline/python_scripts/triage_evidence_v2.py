@@ -1,4 +1,4 @@
-# Copyright 2026 Ryu116
+# Copyright 2026 Ryu116 (also known as HappyTotoro116)
 # Licensed under the Apache License, Version 2.0
 # http://www.apache.org/licenses/LICENSE-2.0
 
