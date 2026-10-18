@@ -1,0 +1,453 @@
+==============================================================
+--------------------------------------------------------------
+-------------------- PYGHIDRA INSTRUCTION --------------------
+--------------------------------------------------------------
+==============================================================
+
+---------------------------
+INSTRUCTION AND REQUIREMENT
+---------------------------
+
+- At least Ghidra 12.1.13
+- Run PyGhidra instead of Ghidra
+- Ensure you configure and run analyze mode first
+- Run RTTI script (If RTTI doesn't exist, go on to next step)
+- Run script name make_full_lite_v2.py
+- The dump will appear in Downloads folder (Ghidra_Dumps)
+- You will see the following folders and the files inside:
+
+NOTE: (FILE NAME) = When running analyze on any file and creating a dump from it, the dump folders will appear with that file name.
+NOTE: The dump never changes your Ghidra program. It only reads it.
+
+(FILE NAME)_ASSEMBLY
+	00_summary.txt
+	14_Assembly_dump.txt		<-- every instruction, grouped by function. This is the ground truth.
+
+(FILE NAME)_C_PSEUDOCODE
+	00_summary.txt
+	13_function_dump - AI.txt
+	13_function_dump.txt		<-- Ghidra's C for every function. A hint only, it can lose arguments.
+	decompile_failed.txt		<-- functions Ghidra could not turn into C (assembly only)
+
+(FILE NAME)_INVENTORY
+	00_summary.txt
+	01_memory_blocks.txt
+	02_imports.txt			<-- Windows / DLL functions the exe calls
+	03_exports.txt
+	04_classes.txt			<-- RTTI classes (empty is fine)
+	05_functions.txt
+	06_strings.txt
+	07_constants.txt
+	08_variables.txt
+	09_string_tables.txt
+	10_compare_chains.txt
+	11_structures.txt
+	12_enums.txt
+	dump_index.json
+
+The function address links the same function across all three folders.
+
+==============================================================
+--------------------------------------------------------------
+--------------------- PYTHON INSTRUCTION ---------------------
+--------------------------------------------------------------
+==============================================================
+
+---------------------------
+STEP ONE - SETTING UP FILES
+---------------------------
+
+After you create the dump using make_full_lite_v2.py, it is ideal to create a new folder, ideally call it "Dump pipeline".
+
+You will be required to have the copies of the following files from the dump:
+
+- 14_Assembly_dump.txt		<-- REQUIRED. The assembly of every function.
+- 13_function_dump.txt		<-- REQUIRED. The Ghidra C of every function.
+- 02_imports.txt		<-- RECOMMENDED. Lets triage recognise Windows API calls.
+- 04_classes.txt		<-- OPTIONAL. RTTI classes, makes the grouping better. An empty file is fine.
+
+Place the following python files along with the .txt files listed above:
+
+- analyze_out.py		<-- counts the token size of the groups (optional step)
+- build_roles_v2.py		<-- makes the roles map and the work queues
+- make_full_lite_v2.py		<-- groups the functions and writes one file per function
+- OVERRIDES_TEMPLATE.tsv	<-- empty list to fill by hand (see OVERRIDES at the end)
+- triage_evidence_v2.py		<-- labels every function KEEP / WRAP / REPLACE / UNKNOWN
+
+-------------------------------------
+STEP TWO - CREATING GROUPED FUNCTIONS
+-------------------------------------
+
+- Bring up powershell and cd to the location where the folder containing the files you set up is.
+command:  cd "(address to the folder)"
+(replace (address to the folder) with actual location to the folder)
+
+- Run the script 'make_full_lite_v2.py' with this command:
+python .\make_full_lite_v2.py --in . --out .\OUT
+
+- The folder "OUT" will be created with the following contents:
+
+FULL					<-- Assembly + C Pseudocode, one file per group (class)
+LITE_AC					<-- Assembly + C Pseudocode, one file per function (the one the next steps use)
+LITE_A					<-- Assembly ONLY
+LITE_C					<-- C Pseudocode ONLY
+Report.txt				<-- how the functions were grouped, and the counts
+GLOBALS_SHARED.tsv			<-- data addresses used by 2 or more groups
+
+---------------------------------------
+STEP THREE - CALCULATING THE TOKEN SIZE
+---------------------------------------
+
+- Run the script 'analyze_out.py' with this command:
+python .\analyze_out.py --out-dir .\OUT
+
+A folder inside 'OUT' will be created, along with the files inside it:
+
+Reports
+	Token_FULL_by_name.txt			<-- token size per group, sorted by name
+	Token_FULL_by_tokens.txt		<-- same, biggest first
+	Token_LITE_AC_by_name.txt		<-- same for LITE_AC
+	Token_LITE_AC_by_tokens.txt
+	Token_LITE_A_by_name.txt		<-- same for LITE_A
+	Token_LITE_A_by_tokens.txt
+	Token_LITE_C_by_name.txt		<-- same for LITE_C
+	Token_LITE_C_by_tokens.txt
+
+Use them to see which groups fit in your model's context window.
+
+------------------------------
+STEP FOUR - TRIAGE - PHASE ONE
+------------------------------
+
+- Run the script 'triage_evidence_v2.py' with this command:
+
+>>> Without overrides (the script guesses everything)
+python .\triage_evidence_v2.py --lite "<WORK>\OUT\LITE_AC"
+
+>>> With overrides (your labels win over the guess)
+python .\triage_evidence_v2.py --lite "<WORK>\OUT\LITE_AC" --overrides "<WORK>\OVERRIDES.tsv"
+
+NOTE: <WORK> is the location where your LITE_AC is located in.  LITE_AC has both assembly and C pseudocode, and this script reads both.
+
+The folder will be created inside OUT folder with files inside it:
+
+TRIAGE
+	TRIAGE.tsv			<-- one verdict per GROUP (first guess, ends with "?")
+	TRIAGE_REPORT.txt		<-- the evidence for each group
+	FUNCTIONS.tsv			<-- one label per FUNCTION. This is the main result.
+	FUNCTIONS_SUMMARY.txt		<-- label counts, total and per group
+
+NOTE: WHY LITE_AC (and not FULL, LITE_A or LITE_C)?
+
+- One function per file. FULL is one big file per group (class). Triage
+  and the later LLM steps work on one function at a time, so the small
+  per-function files in LITE_AC are the right size.
+  
+- It has BOTH assembly and C.
+
+  The assembly is the ground truth, and it shows the calls to Windows
+  APIs (used to spot WRAP).
+  
+  The C pseudocode shows the strings in the function (used to tell game
+  code from C runtime), and is easier to read when you decide by hand.
+  LITE_A has no C, so no strings. LITE_C has no assembly, so no ground
+  truth. Each one alone misses half the evidence.
+  
+- Every file keeps the full header: FUNCTION, CALLS, CALLED BY and
+  GLOBALS. Triage uses the call links to follow a label to a function's
+  helpers.
+  
+- The next step (the blueprint) reads the same LITE_AC folder, so
+  everything works from one place.
+
+Check the real sizes in OUT\Reports (Token_FULL vs Token_LITE_AC).
+
+-------------------------------
+OVERWRITE information and notes
+-------------------------------
+
+OVERWRITE (what happens when you run it again):
+- Every run REPLACES the four files above with fresh ones. Nothing is
+  merged and nothing is kept from the last run.
+  
+- So never edit FUNCTIONS.tsv or TRIAGE.tsv by hand. Your edit is lost
+  on the next run. Put your decisions in OVERRIDES.tsv instead.
+  
+- OVERRIDES.tsv is only READ. The script never writes to it, so it
+  survives every run.
+  
+- The usual loop: run, look at QUEUE_UNKNOWN.tsv, add lines to
+  OVERRIDES.tsv, run again. The new FUNCTIONS.tsv has your labels in it.
+  
+- Want to keep an old result to compare? Copy the TRIAGE folder to
+  another name before you run again.
+  
+- The file is called OVERRIDES.tsv (override = your label wins over
+  the script's guess). It is not "overwrite.tsv", the script will not
+  find it under another name.
+
+- See OVERRIDES_TEMPLATE.tsv for more information
+
+NOTE: It is recommended to have an LLM read the files and help you
+configure OVERRIDES.tsv. Give it QUEUE_UNKNOWN.tsv, FUNCTIONS.tsv and the
+function files from LITE_AC, and ask it for suggested lines with a short
+reason for each. The LLM only suggests. Check each suggestion against the
+function yourself before you add it. Labels are guesses, not proof.
+
+------------------------------
+STEP FIVE - TRIAGE - PHASE TWO
+------------------------------
+
+- Run the script 'build_roles_v2.py' with this command:
+python .\build_roles_v2.py --triage "<WORK>\OUT\TRIAGE"
+
+NOTE: <WORK> is the location where your OUT folder is located in.
+
+ROLES.tsv			<-- one line per group: track, label counts, role
+ROLES.txt			<-- the map: KEEP | WRAP | SHARED | UNKNOWN | REPLACE
+QUEUE_KEEP.tsv			<-- every KEEP function, the list to convert
+QUEUE_WRAP.tsv			<-- every WRAP function, the list to convert
+QUEUE_UNKNOWN.tsv		<-- functions you have to look at by hand
+
+==============================================================
+--------------------------------------------------------------
+--------------------- PYTHON INFORMATION ---------------------
+--------------------------------------------------------------
+==============================================================
+
+ORDER:
+1) make_full_lite_v2.py   2) analyze_out.py (optional)
+3) triage_evidence_v2.py  4) build_roles_v2.py
+(then the LLM conversion step, see BLUEPRINT_HISTORY.txt)
+
+Run every command from the folder that holds the .py files
+(example: D:\AI_TOOLS\SIM_REIMPLEMENTATION\_PYTHON SCRIPTS\Il-2 1946)
+or use full paths.
+
+-------------------------------------------------------------
+FILES YOU NEED (from the Ghidra dump, make_full_lite_v2.py)
+-------------------------------------------------------------
+Put these in ONE working folder (call it WORK):
+
+  14_Assembly_dump.txt     REQUIRED  (make_full_lite_v2)
+  13_function_dump.txt     REQUIRED  (make_full_lite_v2)
+  04_classes.txt           OPTIONAL  (RTTI classes; empty file is fine).
+                           Not needed to run. If the game has RTTI, include
+                           it: grouping gets much better (used before every
+                           other rule except --groups).
+  SMS symbol file          OPTIONAL  (14_FA_SMS_Symbol_Dump.txt, only for games
+                           that have one). Pass with --sms FILE. Same idea:
+                           not needed, helps grouping when present.
+  02_imports.txt           RECOMMENDED for triage (OS API names).
+                           Copy it next to triage_evidence_v2.py,
+                           or into WORK, or pass --imports FILE.
+                           Without it triage says "Imports file: (none)"
+                           and OS-call detection is weaker.
+  OVERRIDES.tsv            OPTIONAL, ONE PER GAME (labels you decide by hand).
+                           Copy OVERRIDES_TEMPLATE.tsv, rename it, put it in
+                           that game's WORK folder. Never keep one in the
+                           scripts folder (it would apply to every game).
+                           More about it in the OVERRIDES part below.
+
+Other dump files (01, 03, 05-12) are not read by these scripts.
+
+-------------------------------------------------------------
+STEP 1  FILE: make_full_lite_v2.py   (grouping)
+-------------------------------------------------------------
+COMMAND:
+python .\make_full_lite_v2.py --in "<WORK>" --out "<WORK>\OUT"
+
+NEEDS (in --in folder):
+14_Assembly_dump.txt, 13_function_dump.txt
+OPTIONAL: 04_classes.txt
+
+HOW IT GROUPS:
+--groups FILE, then RTTI classes (04_classes.txt), then Class::name,
+then Java class from JNI export names (Java_com_..._Class_...),
+SFS_ / RTS_ exports, entry = Startup, then call links
+(a function called only by one group joins it),
+then fallback SHARED### (rare shared globals + address adjacency).
+
+OPTIONS:
+--max-group 150, --common 12, --groups FILE, --grouper-dir FOLDER
+--sms FILE (only if the game has a symbol dump)
+--min-prefix 4 (functions needed for an SMS prefix group)
+
+OUTPUT (in OUT):
+FULL\       asm + C
+LITE_AC\    header + asm + C
+LITE_A\     header + asm only
+LITE_C\     header + C only
+Report.txt
+GLOBALS_SHARED.tsv   addresses used by 2+ groups
+All LITE folders keep the full header and _class.h.
+// CALLS includes tail-jump targets.
+
+EXAMPLE (terminal already in WORK):
+python .\make_full_lite_v2.py --in . --out .\OUT
+
+-------------------------------------------------------------
+STEP 2  FILE: analyze_out.py   (optional token reports)
+-------------------------------------------------------------
+COMMAND:
+python .\analyze_out.py --out-dir "<WORK>\OUT"
+
+NEEDS: the OUT folder from step 1.
+OUTPUT: OUT\Reports (8 token reports: FULL, LITE_AC, LITE_A, LITE_C)
+
+EXAMPLE:
+python .\analyze_out.py --out-dir .\OUT
+
+-------------------------------------------------------------
+STEP 3  FILE: triage_evidence_v2.py   (labels per function)
+-------------------------------------------------------------
+COMMAND:
+python .\triage_evidence_v2.py --lite "<WORK>\OUT\LITE_AC"
+
+NEEDS:
+OUT\LITE_AC (from step 1)
+02_imports.txt (auto-found next to the script or in the current folder;
+or --imports FILE)
+OVERRIDES.tsv (optional, see the OVERRIDES part below)
+
+OPTIONS:
+--report-dir DIR   (default OUT\TRIAGE)
+--overrides FILE   use this OVERRIDES.tsv (see below)
+--crt-start HEX    default 411000 (il2fb value): functions at/after this
+                   address with no game strings do not inherit KEEP/WRAP.
+                   SET IT FOR EACH EXE: it is where the C runtime starts
+                   (look at Report.txt / the function list for the first
+                   _crt-looking names). 0 = guard off.
+--runtime-prefixes RTS_,SFS_,nh_
+                   name starts that mean runtime / file handling.
+                   These are il2fb defaults. Change them for another game.
+
+OUTPUT (in OUT\TRIAGE):
+FUNCTIONS.tsv           one label per function (the main result)
+FUNCTIONS_SUMMARY.txt   counts
+TRIAGE.tsv, TRIAGE_REPORT.txt   per-group verdicts
+
+LABELS:
+KEEP    Java-facing code with its own logic
+WRAP    Java signature kept, new body for OS / input calls
+REPLACE C runtime, allocator, thunks, import stubs
+UNKNOWN look by hand (add the answer to OVERRIDES.tsv, re-run)
+
+-------------------------------------------------------------
+OVERRIDES (labels you decide by hand)
+-------------------------------------------------------------
+Triage is a guess from names, imports, strings and call links.
+When you know better, tell it with OVERRIDES.tsv. Your label wins
+over every rule.
+
+FORMAT (tab separated, first line is the header):
+ENTRY<TAB>LABEL<TAB>NOTE
+00401bb0<TAB>KEEP<TAB>launcher
+
+ENTRY = function address, 8 hex digits, no 0x
+LABEL = KEEP, WRAP, REPLACE or UNKNOWN (small letters are fine)
+NOTE  = free text, optional. It shows in FUNCTIONS.tsv as "override: <note>"
+Any line that does not start with 8 hex digits is ignored, so the
+header and your # comments are safe.
+If the same ENTRY is there twice, the last one wins.
+
+WHERE THE SCRIPT LOOKS (first one found is used):
+1) --overrides FILE
+2) the report folder (OUT\TRIAGE)
+3) the folder of the script
+4) the current folder
+Use --overrides FILE if your WORK folder is not the current folder.
+Never keep it in the scripts folder, it would apply to every game.
+ONE FILE PER GAME: addresses are per exe. A file made for one game is
+wrong for another. Start from OVERRIDES_TEMPLATE.tsv.
+
+HOW TO KNOW IT WAS LOADED:
+The console prints:  Overrides: N from <path>
+No such line = the file was not found.
+N = how many different ENTRY addresses were read (a typo address counts
+too). A typo does not give an error, that line is just never used.
+Check your addresses in FUNCTIONS.tsv: the REASON column says
+"override: <your note>" for every function that took your label.
+
+EXAMPLE OVERRIDES.tsv (made-up addresses, tabs between the columns):
+ENTRY	LABEL	NOTE
+# launcher code, starts the Java VM
+00401000	KEEP	launcher: starts the Java main class
+# calls the Windows window API, keep the Java signature, new body
+00402000	WRAP	creates the game window
+# C runtime start-up, the new engine does not need it
+00403000	REPLACE	CRT init
+# not sure yet, look again later
+00404000	UNKNOWN	has its own strings, check by hand
+
+WHAT THE RESULT LOOKS LIKE in FUNCTIONS.tsv after the run:
+GROUP	ENTRY	NAME	LABEL	REASON
+G1	00401000	FUN_00401000	KEEP	override: launcher: starts the Java main class
+G1	00401100	FUN_00401100	KEEP	helper of Java glue
+G1	00403000	FUN_00403000	REPLACE	override: CRT init
+The middle line has no override. It is only called by 00401000, so it
+followed that label through the call link.
+
+SMALL RULES (tested):
+- Small letters in LABEL are fine (keep = KEEP).
+- Same ENTRY twice: the last line wins.
+- The header line and # lines are ignored.
+- NOTE can be left out.
+
+WHAT AN OVERRIDE DOES:
+- That function gets your label.
+- Helpers that are called ONLY by labeled functions follow through the
+  call links. Example: you mark a launcher KEEP, the small functions
+  only it calls become KEEP (or WRAP if they call Windows APIs).
+  You mark a function REPLACE, helpers only it calls become REPLACE.
+- It changes FUNCTIONS.tsv (per function). The group verdicts in
+  TRIAGE.tsv and TRIAGE_REPORT.txt do not change.
+
+HOW TO USE IT:
+1) Open OUT\TRIAGE\QUEUE_UNKNOWN.tsv (from step 4) to get the addresses.
+2) Look at each function in LITE_AC and decide.
+3) Add a line to OVERRIDES.tsv.
+4) Re-run step 3 and step 4. Every run overwrites the files in
+   OUT\TRIAGE, but never your OVERRIDES.tsv. So edit it freely.
+
+-------------------------------------------------------------
+STEP 4  FILE: build_roles_v2.py   (roles map + queues)
+-------------------------------------------------------------
+COMMAND:
+python .\build_roles_v2.py --triage "<WORK>\OUT\TRIAGE"
+
+NEEDS: OUT\TRIAGE\FUNCTIONS.tsv (from step 3)
+
+OPTIONS:
+--out-dir DIR
+--llm [--model NAME] [--url http://127.0.0.1:1234]
+(one-line role per group from LM Studio; off by default, untested)
+
+OUTPUT (in OUT\TRIAGE):
+ROLES.txt      map: 1_KEEP | 2_WRAP | 3_SHARED | 4_UNKNOWN | 5_REPLACE
+ROLES.tsv      same, one line per group
+QUEUE_KEEP.tsv, QUEUE_WRAP.tsv   functions per track (KEEP and WRAP
+               stay separate; shared helpers are converted once)
+QUEUE_UNKNOWN.tsv   functions to look at by hand
+
+-------------------------------------------------------------
+FULL RUN (copy and paste, in WORK with all .py files)
+-------------------------------------------------------------
+python .\make_full_lite_v2.py --in . --out .\OUT
+python .\analyze_out.py --out-dir .\OUT
+python .\triage_evidence_v2.py --lite .\OUT\LITE_AC
+python .\build_roles_v2.py --triage .\OUT\TRIAGE
+
+Re-run steps 3 and 4 any time you edit OVERRIDES.tsv.
+Never edit OUT by hand: delete OUT and re-run instead.
+
+-------------------------------------------------------------
+LIMITS (observed on il2fb.exe)
+-------------------------------------------------------------
+Labels are evidence-based guesses, not proof.
+Ghidra C can lose function arguments; assembly is the raw truth.
+The scripts read function addresses as 8 hex digits, so they fit
+32-bit exe files. A 64-bit exe (16 digits) is not tested.
+The triage defaults (--crt-start, --runtime-prefixes) are il2fb
+values. Set them for each exe.
+Only il2fb.exe was tested so far.

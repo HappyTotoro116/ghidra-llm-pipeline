@@ -1,0 +1,14 @@
+# game data and outputs: never publish
+SOURCE/
+G_*/
+OUT/
+RUN*/
+BLUEPRINT*/
+*.exe
+*.dll
+OVERRIDES.tsv
+CHECKLIST_OVERRIDES.txt
+02_imports.txt
+14_Assembly_dump.txt
+13_function_dump.txt
+__pycache__/

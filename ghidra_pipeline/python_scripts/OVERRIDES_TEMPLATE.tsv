@@ -1,0 +1,47 @@
+# Copyright 2026 Ryu116
+# Licensed under the Apache License, Version 2.0
+# http://www.apache.org/licenses/LICENSE-2.0
+
+ENTRY	LABEL	NOTE
+# ====================================================================
+# OVERRIDES.tsv - labels you decide by hand (used by triage_evidence_v2.py)
+# ====================================================================
+# HOW TO USE: one game = one copy of this file. Copy it, rename it to OVERRIDES.tsv, put it in that game's folder.
+# Lines that do not start with an 8-digit hex address are ignored (comments are safe).
+# ENTRY = function address, 8 hex digits, no 0x.   LABEL = KEEP | WRAP | REPLACE | UNKNOWN.   NOTE = free text.
+# KEEP = game code with its own logic | WRAP = same interface, new body for OS calls | REPLACE = compiler/OS provides it
+#
+# WHY USE IT
+# - Triage is a guess from names, imports, strings and call links. Your label wins over every rule.
+# - Fix a wrong guess, and settle the functions that are left as UNKNOWN.
+# - Helpers follow you: a small function called ONLY by a function you labeled gets the same label,
+#   so you do not have to list them one by one.
+# - It survives every re-run. Triage overwrites its own files each time, but never this one.
+# - Your NOTE is saved in FUNCTIONS.tsv (REASON column), so you remember why.
+#
+# WHEN TO USE
+# - After the first run: open QUEUE_UNKNOWN.tsv, look at each function in LITE_AC, add a line, run again.
+# - When a label in FUNCTIONS.tsv looks wrong to you (a launcher marked REPLACE, a runtime helper marked KEEP).
+# - When you know something the script cannot see (what a function does from reading it).
+#
+# WHEN NOT TO USE
+# - When the guess is already right. Do not label everything by hand, it is slow and the script is good at the easy ones.
+# - For a whole C runtime zone: set --crt-start in the command instead of listing every function here.
+# - With a file from another game. Addresses belong to ONE exe. A copy from another game gives wrong labels.
+# - In the scripts folder. Keep it in that game's folder, or it would apply to every game.
+# - To hide a problem. If many labels are wrong, check the grouping or the settings first.
+#
+# HOW EACH LABEL AFFECTS TRIAGE (check it in FUNCTIONS.tsv and the QUEUE files after the run)
+# KEEP    the function is KEEP and goes into QUEUE_KEEP.tsv, so the LLM converts it.
+#         Helpers called only by it become KEEP (WRAP if they call Windows APIs).
+# WRAP    the function is WRAP and goes into QUEUE_WRAP.tsv: keep its signature, write a new body.
+#         Helpers called only by it become KEEP (WRAP if they call Windows APIs).
+# REPLACE the function leaves the conversion queues, nothing is converted.
+#         Helpers called only by it become REPLACE (UNKNOWN if they have their own game strings).
+# UNKNOWN the function stays in QUEUE_UNKNOWN.tsv until you decide. It is a note to yourself.
+#
+# Examples (delete the leading # to use):
+#00401000	KEEP	launcher: starts the Java VM
+#00402000	WRAP	calls Win32 window API
+#00411000	REPLACE	C runtime init
+#00403000	UNKNOWN	check by hand later

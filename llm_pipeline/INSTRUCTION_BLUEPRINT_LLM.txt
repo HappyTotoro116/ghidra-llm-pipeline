@@ -1,0 +1,221 @@
+==============================================================
+--------------------------------------------------------------
+------------------ BLUEPRINT + LLM INSTRUCTION ---------------
+--------------------------------------------------------------
+==============================================================
+
+NOTE: This experiment is designed to work with a dump from Ghidra. This is how I started the experiment.
+If you do not have Ghidra, you may have to change the python scripts for your own tools.
+
+---------------------------
+THE IDEA (READ THIS FIRST)
+---------------------------
+
+- A local LLM is bad at reading raw assembly (tracking registers and flags over many lines).
+- A local LLM is good at turning structured code into clean, readable code.
+- So the work is split in two:
+
+PYTHON  reads the assembly, writes a BLUEPRINT (exact facts + a register-level C draft + a checklist).
+LLM     writes the real C from the blueprint. It is free to choose names, structure and comments.
+PYTHON  then checks the answer (text checks + a real compiler) and repairs small slips.
+
+- The LLM is used as a COMPILER, not as an ASSEMBLER.
+- Do not force the LLM with long rule lists. Improve what it is given (the blueprint) and check what comes back.
+- The assembly is the ground truth. Ghidra C is only a hint. The LLM never sees the assembly directly.
+
+---------------------------
+INSTRUCTION AND REQUIREMENT
+---------------------------
+
+- Python 3
+- The LITE_AC folder from INSTRUCTION.txt (OUT\LITE_AC)
+- LM Studio (or any server with the same OpenAI-style API), with ONE model loaded and the local server running
+  Default address: http://127.0.0.1:1234
+- gcc on your PC (RECOMMENDED). It is used as a compile check.
+  Without gcc the runner only does the text checks, and says so.
+  The check only reads the code. It never runs it.
+
+---------------------------
+STEP ONE - SETTING UP FILES
+---------------------------
+
+Make one working folder (example: "LLM Hangar") and put these in it:
+
+- blueprint_v3.py		<-- Python reads the assembly and writes the blueprints (no LLM)
+- run_blueprint_llm_v3.py	<-- sends the blueprints to the LLM and checks the code it returns
+- SOURCE\LITE_AC		<-- copy of OUT\LITE_AC (the group folders with one .txt per function)
+
+Every group, every version and every model share this ONE folder:
+
+LLM Hangar
+	SOURCE				<-- INPUT for everything. Read only. Never edit it.
+		LITE_AC
+			<GroupName>		<-- one folder per group
+	G_<GroupName>			<-- OUTPUT for that group
+		BLUEPRINT_v3		<-- made by blueprint_v3.py
+		RUN1_v3_<model>		<-- one folder per LLM run
+	blueprint_v3.py
+	run_blueprint_llm_v3.py
+
+NOTE: When you have finished INSTRUCTION.txt, copy the 'LITE_AC' folder from the 'OUT' folder into the SOURCE folder
+(SOURCE\LITE_AC). It is the only part this step needs.
+
+Run every command from the LLM Hangar folder.
+
+Bring up powershell and cd to it:   cd "(address to the folder)"
+
+NOTE: The blueprint step makes a blueprint for EVERY function in the group folder. It does not read the triage labels.
+Use QUEUE_KEEP.tsv and QUEUE_WRAP.tsv to choose what to run. REPLACE functions are never converted.
+
+----------------------------------------
+STEP TWO - MAKE THE BLUEPRINTS (no LLM)
+----------------------------------------
+
+- Run the script 'blueprint_v3.py' with this command:
+python .\blueprint_v3.py --group ".\SOURCE\LITE_AC\<GroupName>" --out ".\G_<GroupName>\BLUEPRINT_v3"
+
+NOTE: The script also reads the other groups in SOURCE\LITE_AC to learn the function signatures
+(how many arguments each function takes). So keep --group inside the full LITE_AC folder.
+
+The folder BLUEPRINT_v3 will be created with two files for every function:
+
+<entry>_<name>.blueprint.txt	<-- what the LLM gets (see the parts below)
+<entry>_<name>.check.json	<-- what the runner checks afterwards (names, order, loops, return value)
+
+THE PARTS OF A BLUEPRINT:
+
+FACTS		<-- exact, read from the assembly: arguments, calls in order, globals, strings, return value
+PSEUDO		<-- straight-line reading. Only complete for simple functions
+LIFTED		<-- the whole function as register-level C (registers are variables, branches are if/goto)
+CHECKLIST	<-- short list of what the finished function must contain (loops, ifs, calls, steps, return)
+STEPS		<-- the assembly order of the calls
+DECLARATIONS	<-- includes, extern globals and prototypes. Written by Python, added to the code automatically
+SKELETON	<-- empty outline to fill in
+(Ghidra C hint)	<-- optional, only a hint. If it disagrees with the FACTS, the FACTS win
+
+The CHECKLIST grows with the function: a small function gets a few lines, a long one gets a line per
+loop, if and call (nested lines are inside the line above).
+
+What the lift already does for the LLM (so it does not have to):
+- stack arguments become env / self / arg1 ...
+- the JNI calls become (*env)->Name (GetStringUTFChars, NewStringUTF ...)
+- repne scasb becomes strlen, the compare idiom becomes a strcmp-style result
+- simple jumps become if { } and do { } while ()
+
+OPTIONAL - CHECKLIST_OVERRIDES.txt (same idea as OVERRIDES.tsv, but for the checklist)
+python .\blueprint_v3.py --group ... --out ... --checklist-overrides ".\CHECKLIST_OVERRIDES.txt"
+One line per change, tab separated:
+00403350<TAB>the result must be returned as unsigned	<-- adds a line (shown as "(user)")
+00403350<TAB>-strlen					<-- removes the automatic lines that contain the word "strlen"
+
+----------------------------------------------
+STEP THREE - RUN THE LLM (one model at a time)
+----------------------------------------------
+
+- Load ONE model in LM Studio and start the local server.
+- Run the script 'run_blueprint_llm_v3.py' with this command:
+python .\run_blueprint_llm_v3.py --bp ".\G_<GroupName>\BLUEPRINT_v3" --out ".\G_<GroupName>\RUN1_v3_<model>" --model <model name>
+
+------------------------------------------
+
+EXAMPLE (group name Cpu86ID, one command per model, one model loaded at a time):
+
+Qwen 2.5 Coder 14B
+python .\run_blueprint_llm_v3.py --bp ".\G_Cpu86ID\BLUEPRINT_v3" --out ".\G_Cpu86ID\RUN1_v3_qwen" --model qwen2.5-coder-14b-instruct
+
+DeepSeek Coder V2 Lite
+python .\run_blueprint_llm_v3.py --bp ".\G_Cpu86ID\BLUEPRINT_v3" --out ".\G_Cpu86ID\RUN1_v3_deepseek" --model deepseek-coder-v2-lite-instruct
+
+Mellum 2
+python .\run_blueprint_llm_v3.py --bp ".\G_Cpu86ID\BLUEPRINT_v3" --out ".\G_Cpu86ID\RUN1_v3_mellum2" --model mellum2-12b-a2.5b-instruct
+
+NOTE: The --model name must match the name LM Studio shows for the loaded model.
+Give every run its own --out folder, so one run never overwrites another.
+
+------------------------------------------
+
+NOTE: Always run STEP TWO again first if you changed blueprint_v3.py. The runner reads the blueprint
+folder, an old blueprint gives old results.
+
+OPTIONS:
+--bp DIR	the BLUEPRINT folder from step two (required)
+--out DIR	where the results go (required). Use a new folder name for every run.
+--model NAME	the model name in LM Studio (default qwen2.5-coder-14b-instruct)
+--url URL	default http://127.0.0.1:1234
+--lang C	C (default) or C++ (the C++ output is not tested yet)
+--temp 0.0	default 0.0, so a run can be repeated
+
+While it runs, one line shows the progress:
+[3/6  50%] <function>   try 1   12 s   210 tok   18 tok/s   ETA 0:40
+
+The folder RUN1_v3_<model> will be created with:
+
+ALL_OUTPUT.txt	<-- all results and all code in ONE file (upload or read this one)
+RESULTS.txt	<-- one line per function: PASS or FAIL, tries, seconds, tokens, reason
+C\		<-- the code, one .c file per function (CPP\ with --lang C++)
+CHECKS\		<-- PASS or FAIL with the reasons, one file per function
+
+-----------------------------------
+WHAT THE RUNNER CHECKS AND REPAIRS
+-----------------------------------
+
+CHECKS (after the LLM answers):
+- the function name is there
+- every callee, global and string from the FACTS is used with exactly that name
+- globals read after a call are read after that call
+- the header comment has a Purpose line that starts with "Inferred:"
+- no raw register names, no goto labels, no invented FUN_ / DAT_ names
+- loop count, step sizes (+= 2), compared constants and the return value match the checklist
+- the code compiles (gcc -fsyntax-only)
+
+If a check fails, the runner asks once more and tells the LLM what failed.
+
+REPAIRS (Python fixes these itself, the LLM does not have to):
+- register variables are declared once at the top
+- header lines written outside a comment are wrapped in /* */
+- the last return returns the value of the callee that the assembly returns
+- includes, extern globals and prototypes are added in front of the code
+
+PASS = the text checks AND the compile are OK.
+PASS does NOT prove the logic is right. Read the code against the blueprint (see TIPS).
+
+NOTE: If you have access to a cloud AI, it is ideal to have it read the source files (LITE_AC) and the output from the LLMs,
+to check that the code is accurate and to rate the success / failure rate.
+Only upload files you are allowed to share.
+
+----
+TIPS
+----
+
+- Start with the short functions of a group, then the long ones. Long functions with many loops are where the models struggle.
+- Run one model at a time. Name the run folders so you can tell them apart (RUN1_v3_qwen, RUN2_v3_deepseek ...).
+- Run the same model twice before you judge it. A single run can be lucky.
+- Read the code against the blueprint (LIFTED and FACTS). Check the calls, the loops, the compared constants
+  and what is returned. This catches wrong code that the checker passes.
+- If a model keeps failing one thing, improve the blueprint or the checklist (CHECKLIST_OVERRIDES.txt).
+  Do not add more rules to the LLM prompt. Extra rules made results worse in testing.
+- Fast models are not always better. Check the time per function in RESULTS.txt.
+- Keep older versions of the scripts as a reference (the _BACKUP folder). A new version number is for a big step.
+  Small fixes update the current version.
+
+---------------------------
+VERSIONS
+---------------------------
+
+v1  blueprint_v1.py + run_blueprint_llm_v1.py	facts + register-level draft + text checks + compile check
+v2  blueprint_v2.py + run_blueprint_llm_v2.py	v1 + the CHECKLIST (checked by the runner)
+v3  blueprint_v3.py + run_blueprint_llm_v3.py	v2 + return-value fact and repair, header repair, progress line and timing
+
+Keep the blueprint script and the runner of the SAME version together. See BLUEPRINT_HISTORY.txt for the full story.
+
+---------------------------
+LIMITS (observed)
+---------------------------
+
+- Tested on one group of 6 functions from one 32-bit MSVC program, with three local models.
+  More groups and more programs are needed before this can be called general.
+- PASS is not proof. A behaviour test (run the draft and the LLM code on the same inputs) is not built yet.
+- Pointers are typed as 32-bit integers (int32_t / uint32_t). For a 64-bit build they have to become
+  pointer-sized types. This is not done yet.
+- Very long functions are still the hardest case.
+- Addresses are read as 8 hex digits, so only 32-bit programs fit.
